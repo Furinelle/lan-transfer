@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+*.pyo
+uploads/
+history.json
+history.json.bak
+*.tmp
+.env
+.DS_Store

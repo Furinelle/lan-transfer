@@ -1,0 +1,626 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+  <title>LAN Transfer</title>
+  <style>
+    /* ── Tokens ─────────────────────────────────────────────────────────────── */
+    :root {
+      --p1: #6366f1;
+      --p2: #8b5cf6;
+      --p-shadow: rgba(99,102,241,.28);
+      --bg: #f3f3ff;
+      --surface: #ffffff;
+      --surface2: #f7f7fe;
+      --border: #e4e4f5;
+      --text: #1e1b4b;
+      --text2: #7878a8;
+      --success: #10b981;
+      --danger: #f43f5e;
+      --r: 14px;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0c0b1a;
+        --surface: #14122a;
+        --surface2: #1c1a32;
+        --border: #2a2748;
+        --text: #ede9fe;
+        --text2: #7e7aaa;
+        --p-shadow: rgba(99,102,241,.18);
+      }
+    }
+
+    /* ── Reset ───────────────────────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      background: var(--bg); color: var(--text);
+      min-height: 100dvh; -webkit-tap-highlight-color: transparent;
+    }
+
+    /* ── Header ──────────────────────────────────────────────────────────────── */
+    .hdr {
+      background: linear-gradient(135deg, var(--p1) 0%, var(--p2) 100%);
+      padding: 18px 20px 14px; position: sticky; top: 0; z-index: 30;
+      overflow: hidden;
+    }
+    .hdr::after {
+      content: "";
+      position: absolute; top: -60px; right: -40px;
+      width: 160px; height: 160px;
+      background: rgba(255,255,255,.08);
+      border-radius: 50%; pointer-events: none;
+    }
+    .hdr-title { color: #fff; font-size: 18px; font-weight: 700; letter-spacing: -.3px; }
+    .hdr-sub   { color: rgba(255,255,255,.65); font-size: 11px; margin-top: 2px;
+                 font-family: "SF Mono", Consolas, monospace; }
+
+    /* ── Tab bar ─────────────────────────────────────────────────────────────── */
+    .tab-bar {
+      display: flex; gap: 4px; padding: 8px 12px;
+      background: var(--surface); border-bottom: 1px solid var(--border);
+      overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none;
+      position: sticky; top: 68px; z-index: 20;
+    }
+    .tab-bar::-webkit-scrollbar { display: none; }
+    .tab {
+      flex: 1; min-width: 52px; padding: 7px 10px; border: none;
+      border-radius: 9px; background: none; color: var(--text2);
+      font-size: 13px; font-weight: 500; cursor: pointer; white-space: nowrap;
+      transition: background .18s, color .18s;
+    }
+    .tab.active { background: var(--p1); color: #fff; }
+
+    /* ── Pages ───────────────────────────────────────────────────────────────── */
+    .page { display: none; padding: 16px; max-width: 600px; margin: 0 auto; }
+    .page.active { display: block; animation: rise .2s ease; }
+    @keyframes rise {
+      from { opacity: 0; transform: translateY(6px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    /* ── Card ────────────────────────────────────────────────────────────────── */
+    .card {
+      background: var(--surface); border-radius: var(--r);
+      border: 1px solid var(--border); padding: 16px;
+      margin-bottom: 12px;
+      box-shadow: 0 2px 12px rgba(0,0,0,.045);
+    }
+    .card-hd {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 14px;
+    }
+    .label {
+      font-size: 11px; font-weight: 700; letter-spacing: .7px;
+      text-transform: uppercase; color: var(--text2);
+    }
+
+    /* ── Drop zone ───────────────────────────────────────────────────────────── */
+    .drop {
+      border: 2px dashed var(--border); border-radius: var(--r);
+      padding: 36px 20px; text-align: center; cursor: pointer;
+      background: var(--surface2);
+      transition: border-color .2s, background .2s, transform .2s, box-shadow .2s;
+    }
+    .drop:hover { border-color: var(--p1); background: rgba(99,102,241,.04); }
+    .drop.on    {
+      border-color: var(--p1); background: rgba(99,102,241,.07);
+      transform: scale(1.015);
+      box-shadow: 0 0 0 5px rgba(99,102,241,.12);
+    }
+    .drop-ico  { font-size: 38px; margin-bottom: 10px; }
+    .drop p    { font-size: 14px; color: var(--text2); line-height: 1.6; }
+    .drop small{ font-size: 12px; color: var(--text2); opacity: .6; }
+
+    /* ── Progress ────────────────────────────────────────────────────────────── */
+    .prog { display: none; margin-top: 14px; }
+    .prog-track { height: 5px; background: var(--border); border-radius: 3px; overflow: hidden; }
+    .prog-fill  { height: 100%; width: 0%; border-radius: 3px;
+                  background: linear-gradient(90deg, var(--p1), var(--p2));
+                  transition: width .2s; }
+    .prog-txt   { font-size: 12px; color: var(--text2); margin-top: 5px; }
+
+    /* ── Textarea ────────────────────────────────────────────────────────────── */
+    textarea {
+      width: 100%; border: 1.5px solid var(--border); border-radius: 10px;
+      padding: 11px 13px; font-size: 14px; line-height: 1.55;
+      background: var(--surface2); color: var(--text);
+      resize: vertical; min-height: 92px; font-family: inherit;
+      transition: border-color .18s;
+    }
+    textarea:focus { outline: none; border-color: var(--p1); }
+
+    /* ── Buttons ─────────────────────────────────────────────────────────────── */
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+      padding: 9px 18px; border: none; border-radius: 9px;
+      font-size: 14px; font-weight: 600; cursor: pointer; white-space: nowrap;
+      transition: transform .15s, box-shadow .15s, opacity .15s;
+    }
+    .btn:active { transform: scale(.96); }
+    .btn-primary {
+      background: linear-gradient(135deg, var(--p1), var(--p2));
+      color: #fff;
+      box-shadow: 0 3px 10px var(--p-shadow);
+    }
+    .btn-primary:hover { box-shadow: 0 5px 16px var(--p-shadow); transform: translateY(-1px); }
+    .btn-ghost  { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
+    .btn-ghost:hover { border-color: var(--p1); color: var(--p1); }
+    .btn-danger { background: var(--danger); color: #fff; }
+    .btn-sm     { padding: 6px 13px; font-size: 12px; border-radius: 8px; }
+    .btn:disabled { opacity: .4; pointer-events: none; }
+
+    .row { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+
+    /* ── File item ───────────────────────────────────────────────────────────── */
+    .fi {
+      display: flex; align-items: center; gap: 12px;
+      padding: 11px 12px; border-radius: 10px; margin-bottom: 6px;
+      background: var(--surface2); border: 1px solid var(--border);
+      transition: border-color .18s;
+    }
+    .fi:hover { border-color: var(--p1); }
+    .fi:last-child { margin-bottom: 0; }
+    .fi-ico  { font-size: 28px; flex-shrink: 0; }
+    .fi-info { flex: 1; min-width: 0; }
+    .fi-name { font-size: 14px; font-weight: 600; overflow: hidden;
+               text-overflow: ellipsis; white-space: nowrap; }
+    .fi-meta { font-size: 12px; color: var(--text2); margin-top: 2px; }
+    .fi-acts { display: flex; gap: 6px; flex-shrink: 0; }
+
+    /* ── History item ────────────────────────────────────────────────────────── */
+    .hi {
+      display: flex; align-items: flex-start; gap: 12px;
+      padding: 12px; border-radius: 10px; margin-bottom: 6px;
+      background: var(--surface2); border: 1px solid var(--border);
+    }
+    .hi:last-child { margin-bottom: 0; }
+    .hi-dot {
+      width: 36px; height: 36px; border-radius: 10px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 18px; flex-shrink: 0;
+    }
+    .hi-dot.file { background: rgba(99,102,241,.12); }
+    .hi-dot.text { background: rgba(16,185,129,.12); }
+    .hi-body { flex: 1; min-width: 0; }
+    .hi-prev { font-size: 13px; font-weight: 500; overflow: hidden;
+               text-overflow: ellipsis; white-space: nowrap; }
+    .hi-meta { font-size: 11px; color: var(--text2); margin-top: 3px; display: flex; gap: 8px; }
+    .hi-badge {
+      display: inline-block; padding: 1px 7px; border-radius: 8px;
+      font-size: 10px; font-weight: 700; text-transform: uppercase;
+    }
+    .hi-badge.file { background: rgba(99,102,241,.1); color: var(--p1); }
+    .hi-badge.text { background: rgba(16,185,129,.1);  color: var(--success); }
+
+    /* ── Toggle ──────────────────────────────────────────────────────────────── */
+    .toggle-row {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border);
+    }
+    .toggle-row > span { font-size: 13px; color: var(--text2); }
+    .sw { position: relative; width: 46px; height: 26px; flex-shrink: 0; }
+    .sw input { opacity: 0; width: 0; height: 0; }
+    .sw-track {
+      position: absolute; inset: 0; background: var(--border);
+      border-radius: 26px; cursor: pointer; transition: background .2s;
+    }
+    .sw-track::before {
+      content: ""; position: absolute; width: 22px; height: 22px;
+      left: 2px; top: 2px; background: #fff; border-radius: 50%;
+      transition: transform .2s; box-shadow: 0 1px 4px rgba(0,0,0,.18);
+    }
+    .sw input:checked + .sw-track { background: var(--p1); }
+    .sw input:checked + .sw-track::before { transform: translateX(20px); }
+
+    /* ── QR page ─────────────────────────────────────────────────────────────── */
+    .qr-center { text-align: center; padding: 8px 0 16px; }
+    .qr-frame {
+      display: inline-block; padding: 16px;
+      background: #fff; border-radius: 20px;
+      box-shadow: 0 8px 32px rgba(99,102,241,.18);
+      border: 1px solid rgba(99,102,241,.1);
+    }
+    .qr-frame img { width: 200px; height: 200px; display: block; border-radius: 6px; }
+    .qr-hint { font-size: 13px; color: var(--text2); margin-top: 12px; }
+    .url-box {
+      font-size: 14px; color: var(--p1); font-weight: 600;
+      background: rgba(99,102,241,.08); padding: 11px 14px;
+      border-radius: 10px; font-family: "SF Mono", Consolas, monospace;
+      word-break: break-all; border: 1px solid rgba(99,102,241,.15);
+      margin-top: 12px;
+    }
+
+    /* ── Divider ─────────────────────────────────────────────────────────────── */
+    .divider {
+      height: 1px; background: var(--border); margin: 14px 0;
+    }
+
+    /* ── Empty ───────────────────────────────────────────────────────────────── */
+    .empty {
+      text-align: center; padding: 32px 0;
+      color: var(--text2); font-size: 14px; line-height: 1.7;
+    }
+    .empty-ico { font-size: 36px; margin-bottom: 8px; }
+
+    /* ── Toast ───────────────────────────────────────────────────────────────── */
+    #toast {
+      position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%) translateY(8px);
+      background: rgba(20,18,42,.92); color: #fff; padding: 10px 22px;
+      border-radius: 22px; font-size: 13px; font-weight: 500;
+      z-index: 99; opacity: 0; transition: opacity .22s, transform .22s;
+      pointer-events: none; white-space: nowrap;
+      backdrop-filter: blur(12px); border: 1px solid rgba(255,255,255,.08);
+    }
+    #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  </style>
+</head>
+<body>
+
+<!-- ══ Header ══════════════════════════════════════════════════════════════════ -->
+<div class="hdr">
+  <div class="hdr-title">🔗 LAN Transfer</div>
+  <div class="hdr-sub"  id="hdrUrl">正在连接…</div>
+</div>
+
+<!-- ══ Tab bar ══════════════════════════════════════════════════════════════════ -->
+<div class="tab-bar">
+  <button class="tab active" onclick="switchTab('send')"      id="tab-send">发送</button>
+  <button class="tab"        onclick="switchTab('receive')"   id="tab-receive">接收</button>
+  <button class="tab"        onclick="switchTab('clipboard')" id="tab-clipboard">剪贴板</button>
+  <button class="tab"        onclick="switchTab('history')"   id="tab-history">历史</button>
+  <button class="tab"        onclick="switchTab('connect')"   id="tab-connect">连接</button>
+</div>
+
+<!-- ══ Send ════════════════════════════════════════════════════════════════════ -->
+<div class="page active" id="page-send">
+
+  <div class="card">
+    <div class="card-hd"><span class="label">发送文件</span></div>
+    <div class="drop" id="dropZone"
+         onclick="document.getElementById('fileInput').click()">
+      <div class="drop-ico">📤</div>
+      <p>点击选择，或将文件<strong>拖入此处</strong></p>
+      <small>支持多文件同时上传</small>
+    </div>
+    <input type="file" id="fileInput" multiple hidden>
+    <div class="prog" id="progWrap">
+      <div class="prog-track"><div class="prog-fill" id="progFill"></div></div>
+      <div class="prog-txt"   id="progText"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-hd"><span class="label">发送文字</span></div>
+    <textarea id="textInput" placeholder="输入要发到电脑的文字…"></textarea>
+    <div class="row">
+      <button class="btn btn-primary" onclick="sendText()">发送</button>
+    </div>
+  </div>
+
+</div>
+
+<!-- ══ Receive ══════════════════════════════════════════════════════════════════ -->
+<div class="page" id="page-receive">
+
+  <div class="card">
+    <div class="card-hd">
+      <span class="label">已接收文件</span>
+      <button class="btn btn-ghost btn-sm" onclick="loadFiles()">↻ 刷新</button>
+    </div>
+    <div id="fileList">
+      <div class="empty"><div class="empty-ico">📭</div>暂无文件<br><small>从手机上传后会显示在这里</small></div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ══ Clipboard ════════════════════════════════════════════════════════════════ -->
+<div class="page" id="page-clipboard">
+
+  <div class="card">
+    <div class="card-hd"><span class="label">读取电脑剪贴板</span></div>
+    <textarea id="clipRead" placeholder="点击「读取」从电脑剪贴板获取文字…"
+              readonly style="min-height:80px"></textarea>
+    <div class="row">
+      <button class="btn btn-primary" onclick="readClipboard()">读取</button>
+      <button class="btn btn-ghost"   onclick="copyToPhone()">复制到手机</button>
+    </div>
+    <div class="toggle-row">
+      <span>自动同步（每 3 秒）</span>
+      <label class="sw">
+        <input type="checkbox" id="autoPoll" onchange="toggleAutoPoll()">
+        <span class="sw-track"></span>
+      </label>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-hd"><span class="label">写入电脑剪贴板</span></div>
+    <textarea id="clipWrite" placeholder="输入文字后发送，直接出现在电脑剪贴板…"
+              style="min-height:80px"></textarea>
+    <div class="row">
+      <button class="btn btn-primary" onclick="writeClipboard()">写入剪贴板</button>
+    </div>
+  </div>
+
+</div>
+
+<!-- ══ History ══════════════════════════════════════════════════════════════════ -->
+<div class="page" id="page-history">
+
+  <div class="card">
+    <div class="card-hd">
+      <span class="label">传输历史</span>
+      <button class="btn btn-danger btn-sm" onclick="clearHistory()">清空</button>
+    </div>
+    <div id="histList">
+      <div class="empty"><div class="empty-ico">🕐</div>暂无记录</div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ══ Connect ══════════════════════════════════════════════════════════════════ -->
+<div class="page" id="page-connect">
+
+  <div class="card">
+    <div class="card-hd"><span class="label">手机扫码连接</span></div>
+    <div class="qr-center">
+      <div class="qr-frame">
+        <img id="qrImg" src="/api/qr" alt="QR Code">
+      </div>
+      <div class="qr-hint">与电脑连接同一 Wi-Fi，扫码即可访问</div>
+    </div>
+    <div class="url-box" id="serverUrl">获取中…</div>
+    <div class="row" style="justify-content:center;margin-top:14px">
+      <button class="btn btn-ghost" onclick="copyUrl()">复制链接</button>
+    </div>
+  </div>
+
+</div>
+
+<div id="toast"></div>
+
+<script>
+// ── Tab switching ────────────────────────────────────────────────────────────
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+  document.getElementById('page-' + name).classList.add('active');
+  if (name === 'receive')  loadFiles();
+  if (name === 'history')  loadHistory();
+  if (name === 'connect')  loadInfo();
+}
+
+// ── Toast ─────────────────────────────────────────────────────────────────────
+let toastTimer;
+function toast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 2400);
+}
+
+// ── Utilities ─────────────────────────────────────────────────────────────────
+function esc(s) {
+  return String(s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;');
+}
+function fmtSize(b) {
+  if (b < 1024)    return b + ' B';
+  if (b < 1048576) return (b/1024).toFixed(1) + ' KB';
+  return (b/1048576).toFixed(1) + ' MB';
+}
+function fmtTime(iso) {
+  const d = new Date(iso), s = (Date.now() - d) / 1000;
+  if (s < 60)    return '刚刚';
+  if (s < 3600)  return Math.floor(s/60) + ' 分钟前';
+  if (s < 86400) return Math.floor(s/3600) + ' 小时前';
+  return d.toLocaleDateString('zh');
+}
+function fileIco(name) {
+  const e = (name.split('.').pop()||'').toLowerCase();
+  if (['jpg','jpeg','png','gif','webp','bmp','svg'].includes(e)) return '🖼️';
+  if (['mp4','mov','avi','mkv','wmv'].includes(e)) return '🎬';
+  if (['mp3','wav','flac','aac','ogg'].includes(e)) return '🎵';
+  if (e === 'pdf')  return '📄';
+  if (['zip','rar','7z','tar','gz'].includes(e)) return '🗜️';
+  if (['doc','docx'].includes(e)) return '📝';
+  if (['xls','xlsx'].includes(e)) return '📊';
+  return '📁';
+}
+
+// ── File upload ───────────────────────────────────────────────────────────────
+const dropZone  = document.getElementById('dropZone');
+const fileInput = document.getElementById('fileInput');
+
+dropZone.addEventListener('dragover',  e => { e.preventDefault(); dropZone.classList.add('on'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('on'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault(); dropZone.classList.remove('on');
+  uploadFiles(e.dataTransfer.files);
+});
+fileInput.addEventListener('change', () => { uploadFiles(fileInput.files); fileInput.value = ''; });
+
+function uploadFiles(files) {
+  if (!files.length) return;
+  const fd = new FormData();
+  for (const f of files) fd.append('files', f);
+
+  const wrap = document.getElementById('progWrap');
+  const fill = document.getElementById('progFill');
+  const text = document.getElementById('progText');
+  wrap.style.display = 'block';
+  fill.style.width = '0%';
+  text.textContent = '准备上传…';
+
+  const xhr = new XMLHttpRequest();
+  xhr.upload.onprogress = e => {
+    if (!e.lengthComputable) return;
+    const pct = Math.round(e.loaded / e.total * 100);
+    fill.style.width = pct + '%';
+    text.textContent = `${pct}%  ${fmtSize(e.loaded)} / ${fmtSize(e.total)}`;
+  };
+  xhr.onload = () => {
+    wrap.style.display = 'none';
+    if (xhr.status === 200) {
+      const r = JSON.parse(xhr.responseText);
+      toast(`✓ 已发送 ${r.files.length} 个文件`);
+    } else {
+      toast('上传失败');
+    }
+  };
+  xhr.onerror = () => { wrap.style.display = 'none'; toast('上传出错'); };
+  xhr.open('POST', '/api/files/upload');
+  xhr.send(fd);
+}
+
+// ── Send text ─────────────────────────────────────────────────────────────────
+async function sendText() {
+  const content = document.getElementById('textInput').value.trim();
+  if (!content) { toast('请先输入文字'); return; }
+  const r = await fetch('/api/text/send', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content }),
+  });
+  if (r.ok) { toast('✓ 文字已发送'); document.getElementById('textInput').value = ''; }
+  else       toast('发送失败');
+}
+
+// ── File list ─────────────────────────────────────────────────────────────────
+async function loadFiles() {
+  const { files } = await fetch('/api/files/list').then(r => r.json());
+  const el = document.getElementById('fileList');
+  if (!files.length) {
+    el.innerHTML = '<div class="empty"><div class="empty-ico">📭</div>暂无文件<br><small>从手机上传后会显示在这里</small></div>';
+    return;
+  }
+  el.innerHTML = files.map(f => `
+    <div class="fi">
+      <div class="fi-ico">${fileIco(f.filename)}</div>
+      <div class="fi-info">
+        <div class="fi-name">${esc(f.filename)}</div>
+        <div class="fi-meta">${fmtSize(f.size)} · ${fmtTime(f.modified)}</div>
+      </div>
+      <div class="fi-acts">
+        <a class="btn btn-primary btn-sm"
+           href="/api/files/download/${encodeURIComponent(f.filename)}"
+           download="${esc(f.filename)}">下载</a>
+        <button class="btn btn-ghost btn-sm"
+                onclick="delFile('${esc(f.filename)}')">删除</button>
+      </div>
+    </div>`).join('');
+}
+
+async function delFile(name) {
+  await fetch(`/api/files/${encodeURIComponent(name)}`, { method: 'DELETE' });
+  toast('已删除');
+  loadFiles();
+}
+
+setInterval(() => {
+  if (document.getElementById('page-receive').classList.contains('active')) loadFiles();
+}, 10000);
+
+// ── Clipboard ─────────────────────────────────────────────────────────────────
+let pollTimer = null;
+
+async function readClipboard() {
+  const data = await fetch('/api/clipboard/read').then(r => r.json());
+  if (data.content !== null && data.content !== undefined) {
+    document.getElementById('clipRead').value = data.content;
+  } else {
+    toast(data.error || '剪贴板无文本');
+  }
+}
+
+function copyToPhone() {
+  const text = document.getElementById('clipRead').value;
+  if (!text) { toast('剪贴板内容为空'); return; }
+  const ta = Object.assign(document.createElement('textarea'),
+    { value: text, style: 'position:fixed;opacity:0' });
+  document.body.appendChild(ta); ta.select();
+  try   { document.execCommand('copy'); toast('✓ 已复制到手机剪贴板'); }
+  catch { toast('请手动长按复制'); }
+  document.body.removeChild(ta);
+}
+
+async function writeClipboard() {
+  const content = document.getElementById('clipWrite').value;
+  if (!content) { toast('请先输入文字'); return; }
+  const r = await fetch('/api/clipboard/write', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content }),
+  });
+  if (r.ok) toast('✓ 已写入电脑剪贴板');
+  else       toast('写入失败');
+}
+
+function toggleAutoPoll() {
+  if (document.getElementById('autoPoll').checked) {
+    pollTimer = setInterval(readClipboard, 3000); toast('自动同步已开启');
+  } else {
+    clearInterval(pollTimer); pollTimer = null; toast('自动同步已关闭');
+  }
+}
+
+// ── History ───────────────────────────────────────────────────────────────────
+async function loadHistory() {
+  const { history } = await fetch('/api/history').then(r => r.json());
+  const el = document.getElementById('histList');
+  if (!history.length) {
+    el.innerHTML = '<div class="empty"><div class="empty-ico">🕐</div>暂无记录</div>';
+    return;
+  }
+  el.innerHTML = history.map(h => `
+    <div class="hi">
+      <div class="hi-dot ${h.type}">${h.type === 'file' ? fileIco(h.content) : '💬'}</div>
+      <div class="hi-body">
+        <div class="hi-prev">${esc(h.preview || h.content)}</div>
+        <div class="hi-meta">
+          <span class="hi-badge ${h.type}">${h.type === 'file' ? '文件' : '文字'}</span>
+          <span>${h.type === 'file' ? fmtSize(h.size) + ' · ' : ''}${fmtTime(h.timestamp)}</span>
+        </div>
+      </div>
+      <button class="btn btn-ghost btn-sm" onclick="delHistEntry('${h.id}')">×</button>
+    </div>`).join('');
+}
+
+async function clearHistory() {
+  await fetch('/api/history', { method: 'DELETE' }); toast('历史已清空'); loadHistory();
+}
+
+async function delHistEntry(id) {
+  await fetch(`/api/history/${id}`, { method: 'DELETE' }); loadHistory();
+}
+
+// ── Connect ───────────────────────────────────────────────────────────────────
+async function loadInfo() {
+  const data = await fetch('/api/info').then(r => r.json());
+  document.getElementById('serverUrl').textContent = data.url;
+}
+
+function copyUrl() {
+  const url = document.getElementById('serverUrl').textContent;
+  const ta = Object.assign(document.createElement('textarea'),
+    { value: url, style: 'position:fixed;opacity:0' });
+  document.body.appendChild(ta); ta.select();
+  try   { document.execCommand('copy'); toast('✓ 链接已复制'); }
+  catch { toast('复制失败'); }
+  document.body.removeChild(ta);
+}
+
+// ── Init: show IP in header ───────────────────────────────────────────────────
+fetch('/api/info').then(r => r.json()).then(d => {
+  document.getElementById('hdrUrl').textContent = d.url;
+  document.getElementById('serverUrl').textContent = d.url;
+});
+</script>
+</body>
+</html>

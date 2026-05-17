@@ -370,7 +370,7 @@
     <div class="card-hd"><span class="label">手机扫码连接</span></div>
     <div class="qr-center">
       <div class="qr-frame">
-        <img id="qrImg" src="/api/qr" alt="QR Code">
+        <img id="qrImg" alt="QR Code">
       </div>
       <div class="qr-hint">与电脑连接同一 Wi-Fi，扫码即可访问</div>
     </div>
@@ -385,6 +385,36 @@
 <div id="toast"></div>
 
 <script>
+// ── Access token ─────────────────────────────────────────────────────────────
+const urlToken = new URLSearchParams(window.location.search).get('token');
+const accessToken = urlToken || sessionStorage.getItem('lanTransferToken') || '';
+if (urlToken) sessionStorage.setItem('lanTransferToken', urlToken);
+let maxFileBytes = null;
+
+function withToken(path) {
+  const url = new URL(path, window.location.origin);
+  if (accessToken) url.searchParams.set('token', accessToken);
+  return url.pathname + url.search + url.hash;
+}
+function authHeaders(headers = {}) {
+  return accessToken ? { ...headers, 'X-LAN-Token': accessToken } : headers;
+}
+function apiFetch(path, options = {}) {
+  return fetch(withToken(path), {
+    ...options,
+    headers: authHeaders(options.headers || {}),
+  });
+}
+async function apiJson(path, options = {}) {
+  const r = await apiFetch(path, options);
+  if (r.status === 403) {
+    toast('访问链接无效，请重新扫码');
+    throw new Error('Invalid access token');
+  }
+  if (!r.ok) throw new Error(`Request failed: ${r.status}`);
+  return r.json();
+}
+
 // ── Tab switching ────────────────────────────────────────────────────────────
 function switchTab(name) {
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -412,10 +442,14 @@ function esc(s) {
     .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
     .replace(/"/g,'&quot;');
 }
+function jsArg(s) {
+  return esc(JSON.stringify(String(s)));
+}
 function fmtSize(b) {
   if (b < 1024)    return b + ' B';
   if (b < 1048576) return (b/1024).toFixed(1) + ' KB';
-  return (b/1048576).toFixed(1) + ' MB';
+  if (b < 1073741824) return (b/1048576).toFixed(1) + ' MB';
+  return (b/1073741824).toFixed(2) + ' GB';
 }
 function fmtTime(iso) {
   const d = new Date(iso), s = (Date.now() - d) / 1000;
@@ -450,8 +484,15 @@ fileInput.addEventListener('change', () => { uploadFiles(fileInput.files); fileI
 
 function uploadFiles(files) {
   if (!files.length) return;
+  const fileList = Array.from(files);
+  const oversized = fileList.find(f => maxFileBytes && f.size > maxFileBytes);
+  if (oversized) {
+    toast(`文件超过上限：${fmtSize(maxFileBytes)}`);
+    return;
+  }
+
   const fd = new FormData();
-  for (const f of files) fd.append('files', f);
+  for (const f of fileList) fd.append('files', f);
 
   const wrap = document.getElementById('progWrap');
   const fill = document.getElementById('progFill');
@@ -472,12 +513,17 @@ function uploadFiles(files) {
     if (xhr.status === 200) {
       const r = JSON.parse(xhr.responseText);
       toast(`✓ 已发送 ${r.files.length} 个文件`);
+    } else if (xhr.status === 413) {
+      toast(`文件超过上限：${maxFileBytes ? fmtSize(maxFileBytes) : '过大'}`);
+    } else if (xhr.status === 507) {
+      toast('电脑磁盘空间不足');
     } else {
       toast('上传失败');
     }
   };
   xhr.onerror = () => { wrap.style.display = 'none'; toast('上传出错'); };
-  xhr.open('POST', '/api/files/upload');
+  xhr.open('POST', withToken('/api/files/upload'));
+  if (accessToken) xhr.setRequestHeader('X-LAN-Token', accessToken);
   xhr.send(fd);
 }
 
@@ -485,7 +531,7 @@ function uploadFiles(files) {
 async function sendText() {
   const content = document.getElementById('textInput').value.trim();
   if (!content) { toast('请先输入文字'); return; }
-  const r = await fetch('/api/text/send', {
+  const r = await apiFetch('/api/text/send', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ content }),
   });
@@ -495,7 +541,7 @@ async function sendText() {
 
 // ── File list ─────────────────────────────────────────────────────────────────
 async function loadFiles() {
-  const { files } = await fetch('/api/files/list').then(r => r.json());
+  const { files } = await apiJson('/api/files/list');
   const el = document.getElementById('fileList');
   if (!files.length) {
     el.innerHTML = '<div class="empty"><div class="empty-ico">📭</div>暂无文件<br><small>从手机上传后会显示在这里</small></div>';
@@ -510,16 +556,16 @@ async function loadFiles() {
       </div>
       <div class="fi-acts">
         <a class="btn btn-primary btn-sm"
-           href="/api/files/download/${encodeURIComponent(f.filename)}"
+           href="${withToken('/api/files/download/' + encodeURIComponent(f.filename))}"
            download="${esc(f.filename)}">下载</a>
         <button class="btn btn-ghost btn-sm"
-                onclick="delFile('${esc(f.filename)}')">删除</button>
+                onclick="delFile(${jsArg(f.filename)})">删除</button>
       </div>
     </div>`).join('');
 }
 
 async function delFile(name) {
-  await fetch(`/api/files/${encodeURIComponent(name)}`, { method: 'DELETE' });
+  await apiFetch(`/api/files/${encodeURIComponent(name)}`, { method: 'DELETE' });
   toast('已删除');
   loadFiles();
 }
@@ -532,7 +578,7 @@ setInterval(() => {
 let pollTimer = null;
 
 async function readClipboard() {
-  const data = await fetch('/api/clipboard/read').then(r => r.json());
+  const data = await apiJson('/api/clipboard/read');
   if (data.content !== null && data.content !== undefined) {
     document.getElementById('clipRead').value = data.content;
   } else {
@@ -554,7 +600,7 @@ function copyToPhone() {
 async function writeClipboard() {
   const content = document.getElementById('clipWrite').value;
   if (!content) { toast('请先输入文字'); return; }
-  const r = await fetch('/api/clipboard/write', {
+  const r = await apiFetch('/api/clipboard/write', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ content }),
   });
@@ -572,7 +618,7 @@ function toggleAutoPoll() {
 
 // ── History ───────────────────────────────────────────────────────────────────
 async function loadHistory() {
-  const { history } = await fetch('/api/history').then(r => r.json());
+  const { history } = await apiJson('/api/history');
   const el = document.getElementById('histList');
   if (!history.length) {
     el.innerHTML = '<div class="empty"><div class="empty-ico">🕐</div>暂无记录</div>';
@@ -588,21 +634,22 @@ async function loadHistory() {
           <span>${h.type === 'file' ? fmtSize(h.size) + ' · ' : ''}${fmtTime(h.timestamp)}</span>
         </div>
       </div>
-      <button class="btn btn-ghost btn-sm" onclick="delHistEntry('${h.id}')">×</button>
+      <button class="btn btn-ghost btn-sm" onclick="delHistEntry(${jsArg(h.id)})">×</button>
     </div>`).join('');
 }
 
 async function clearHistory() {
-  await fetch('/api/history', { method: 'DELETE' }); toast('历史已清空'); loadHistory();
+  await apiFetch('/api/history', { method: 'DELETE' }); toast('历史已清空'); loadHistory();
 }
 
 async function delHistEntry(id) {
-  await fetch(`/api/history/${id}`, { method: 'DELETE' }); loadHistory();
+  await apiFetch(`/api/history/${id}`, { method: 'DELETE' }); loadHistory();
 }
 
 // ── Connect ───────────────────────────────────────────────────────────────────
 async function loadInfo() {
-  const data = await fetch('/api/info').then(r => r.json());
+  const data = await apiJson('/api/info');
+  maxFileBytes = data.maxFileBytes;
   document.getElementById('serverUrl').textContent = data.url;
 }
 
@@ -617,9 +664,13 @@ function copyUrl() {
 }
 
 // ── Init: show IP in header ───────────────────────────────────────────────────
-fetch('/api/info').then(r => r.json()).then(d => {
+document.getElementById('qrImg').src = withToken('/api/qr');
+apiJson('/api/info').then(d => {
+  maxFileBytes = d.maxFileBytes;
   document.getElementById('hdrUrl').textContent = d.url;
   document.getElementById('serverUrl').textContent = d.url;
+}).catch(() => {
+  document.getElementById('hdrUrl').textContent = '访问链接无效，请重新扫码';
 });
 </script>
 </body>

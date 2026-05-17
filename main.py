@@ -2,6 +2,8 @@ import argparse
 import asyncio
 import json
 import os
+import secrets
+import shutil
 import socket
 import threading
 import time
@@ -18,10 +20,8 @@ import qrcode
 import uvicorn
 import win32clipboard
 import win32con
-from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 # ── Config ─────────────────────────────────────────────────────────────────────
@@ -31,6 +31,8 @@ HISTORY_FILE = BASE_DIR / "history.json"
 FRONTEND_DIR = BASE_DIR / "frontend"
 MAX_HISTORY = 50
 DEFAULT_PORT = 8899
+DEFAULT_MAX_FILE_BYTES = 10 * 1024**3
+UPLOAD_CHUNK_SIZE = 4 * 1024**2
 
 # Virtual/non-LAN interface name prefixes to skip during IP detection
 EXCLUDED_IFACE = ("VMware", "VMnet", "vEthernet", "Bluetooth",
@@ -42,6 +44,8 @@ history_lock = asyncio.Lock()
 clipboard_lock = threading.Lock()
 server_ip: str = ""
 server_port: int = DEFAULT_PORT
+access_token: str = secrets.token_urlsafe(24)
+max_file_bytes: int = DEFAULT_MAX_FILE_BYTES
 
 
 # ── IP Detection ───────────────────────────────────────────────────────────────
@@ -64,6 +68,48 @@ def detect_lan_ip() -> str:
     if candidates:
         return candidates[0][1]
     return socket.gethostbyname(socket.gethostname())
+
+
+def build_access_url() -> str:
+    return f"http://{server_ip}:{server_port}/?token={quote(access_token, safe='')}"
+
+
+def request_has_access(request: Request) -> bool:
+    provided_tokens = (
+        request.headers.get("x-lan-token"),
+        request.query_params.get("token"),
+    )
+    return any(
+        token is not None and secrets.compare_digest(token, access_token)
+        for token in provided_tokens
+    )
+
+
+def max_file_bytes_from_gb(value: float) -> int:
+    if value <= 0:
+        return 0
+    return int(value * 1024**3)
+
+
+def get_free_space(path: Path) -> int:
+    path.mkdir(parents=True, exist_ok=True)
+    return shutil.disk_usage(path).free
+
+
+def reserve_upload_path(filename: str) -> Path:
+    name = Path(filename or "unnamed").name
+    stem, suffix = Path(name).stem, Path(name).suffix
+    counter = 0
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+    while True:
+        candidate_name = name if counter == 0 else f"{stem}_{counter}{suffix}"
+        candidate = UPLOAD_DIR / candidate_name
+        try:
+            with candidate.open("xb"):
+                return candidate
+        except FileExistsError:
+            counter += 1
 
 
 # ── History helpers ────────────────────────────────────────────────────────────
@@ -90,6 +136,23 @@ async def append_history(entry: dict):
         history.insert(0, entry)
         del history[MAX_HISTORY:]
         save_history()
+
+
+async def write_upload_file(upload: UploadFile, dest: Path) -> int:
+    size = 0
+    try:
+        with dest.open("wb") as out:
+            while chunk := await upload.read(UPLOAD_CHUNK_SIZE):
+                size += len(chunk)
+                if max_file_bytes and size > max_file_bytes:
+                    raise HTTPException(413, "File too large")
+                if get_free_space(dest.parent) < len(chunk):
+                    raise HTTPException(507, "Insufficient disk space")
+                out.write(chunk)
+    except Exception:
+        dest.unlink(missing_ok=True)
+        raise
+    return size
 
 
 # ── Clipboard helpers (Windows) ────────────────────────────────────────────────
@@ -128,12 +191,12 @@ def _write_clipboard_sync(text: str):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global server_ip
-    UPLOAD_DIR.mkdir(exist_ok=True)
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     load_history()
     if not server_ip:
         server_ip = detect_lan_ip()
 
-    url = f"http://{server_ip}:{server_port}"
+    url = build_access_url()
     qr = qrcode.QRCode(border=1)
     qr.add_data(url)
     qr.make(fit=True)
@@ -151,9 +214,22 @@ async def lifespan(app: FastAPI):
 
 # ── App ────────────────────────────────────────────────────────────────────────
 app = FastAPI(lifespan=lifespan)
-app.add_middleware(
-    CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
-)
+
+
+@app.middleware("http")
+async def require_api_token(request: Request, call_next):
+    if request.url.path.startswith("/api/") and not request_has_access(request):
+        return JSONResponse({"detail": "Invalid or missing access token"}, status_code=403)
+    if request.url.path == "/api/files/upload":
+        content_length = request.headers.get("content-length")
+        if content_length is not None:
+            try:
+                required_bytes = int(content_length)
+            except ValueError:
+                required_bytes = 0
+            if required_bytes > 0 and get_free_space(UPLOAD_DIR) < required_bytes:
+                return JSONResponse({"detail": "Insufficient disk space"}, status_code=507)
+    return await call_next(request)
 
 
 class TextPayload(BaseModel):
@@ -169,21 +245,14 @@ class ClipboardPayload(BaseModel):
 async def upload_files(files: list[UploadFile] = File(...)):
     saved = []
     for f in files:
-        name = Path(f.filename or "unnamed").name  # strip any path traversal
-        dest = UPLOAD_DIR / name
-        counter = 1
-        while dest.exists():
-            stem, suffix = Path(name).stem, Path(name).suffix
-            dest = UPLOAD_DIR / f"{stem}_{counter}{suffix}"
-            counter += 1
-        data = await f.read()
-        dest.write_bytes(data)
+        dest = reserve_upload_path(f.filename or "unnamed")
+        size = await write_upload_file(f, dest)
         await append_history({
             "id": str(uuid.uuid4()), "type": "file", "direction": "received",
-            "content": dest.name, "filename": dest.name, "size": len(data),
+            "content": dest.name, "filename": dest.name, "size": size,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         })
-        saved.append({"filename": dest.name, "size": len(data)})
+        saved.append({"filename": dest.name, "size": size})
     return {"files": saved}
 
 
@@ -284,12 +353,12 @@ async def delete_history_entry(entry_id: str):
 @app.get("/api/info")
 async def get_info():
     return {"ip": server_ip, "port": server_port,
-            "url": f"http://{server_ip}:{server_port}"}
+            "url": build_access_url(), "maxFileBytes": max_file_bytes}
 
 
 @app.get("/api/qr")
 async def get_qr():
-    img = qrcode.make(f"http://{server_ip}:{server_port}")
+    img = qrcode.make(build_access_url())
     buf = BytesIO()
     img.save(buf, format="PNG")
     buf.seek(0)
@@ -311,9 +380,16 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--host", type=str, default=None, help="Override detected LAN IP")
     parser.add_argument("--upload-dir", type=str, default=None, help="Custom upload directory")
+    parser.add_argument(
+        "--max-file-gb",
+        type=float,
+        default=DEFAULT_MAX_FILE_BYTES / 1024**3,
+        help="Maximum size per uploaded file in GB; 0 disables the limit",
+    )
     args = parser.parse_args()
 
     server_port = args.port
+    max_file_bytes = max_file_bytes_from_gb(args.max_file_gb)
     if args.host:
         server_ip = args.host
     if args.upload_dir:

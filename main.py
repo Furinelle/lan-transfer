@@ -5,6 +5,8 @@ import os
 import secrets
 import shutil
 import socket
+import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -18,8 +20,9 @@ from typing import Optional
 import psutil
 import qrcode
 import uvicorn
-import win32clipboard
-import win32con
+if sys.platform == "win32":
+    import win32clipboard
+    import win32con
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
@@ -36,7 +39,8 @@ UPLOAD_CHUNK_SIZE = 4 * 1024**2
 
 # Virtual/non-LAN interface name prefixes to skip during IP detection
 EXCLUDED_IFACE = ("VMware", "VMnet", "vEthernet", "Bluetooth",
-                  "Loopback", "Teredo", "tap", "cfw", "isatap")
+                  "Loopback", "Teredo", "tap", "cfw", "isatap",
+                  "utun", "awdl", "llw")
 
 # ── State ──────────────────────────────────────────────────────────────────────
 history: list = []
@@ -61,13 +65,13 @@ def detect_lan_ip() -> str:
                 continue
             candidates.append((iface_name, addr.address))
 
-    for keyword in ("Wi-Fi", "WLAN", "Ethernet"):
+    for keyword in ("Wi-Fi", "WLAN", "Ethernet", "en0", "en1"):
         match = next((ip for name, ip in candidates if keyword in name), None)
         if match:
             return match
     if candidates:
         return candidates[0][1]
-    return socket.gethostbyname(socket.gethostname())
+    return "127.0.0.1"
 
 
 def build_access_url() -> str:
@@ -155,8 +159,20 @@ async def write_upload_file(upload: UploadFile, dest: Path) -> int:
     return size
 
 
-# ── Clipboard helpers (Windows) ────────────────────────────────────────────────
+# ── Clipboard helpers ─────────────────────────────────────────────────────────
 def _read_clipboard_sync() -> Optional[str]:
+    if sys.platform == "darwin":
+        try:
+            with clipboard_lock:
+                result = subprocess.run(
+                    ["/usr/bin/pbpaste"], capture_output=True, encoding="utf-8",
+                    check=True, timeout=5, env={**os.environ, "LC_CTYPE": "en_US.UTF-8"},
+                )
+            return result.stdout or None
+        except (OSError, subprocess.SubprocessError):
+            raise HTTPException(503, "无法读取电脑剪贴板，请在已登录的桌面会话中重试") from None
+    if sys.platform != "win32":
+        raise HTTPException(501, "当前系统不支持剪贴板，文件和文字传输仍可用")
     for _ in range(3):
         try:
             with clipboard_lock:
@@ -169,10 +185,22 @@ def _read_clipboard_sync() -> Optional[str]:
             return None
         except Exception:
             time.sleep(0.05)
-    return None
+    raise HTTPException(503, "无法读取电脑剪贴板，请稍后重试")
 
 
 def _write_clipboard_sync(text: str):
+    if sys.platform == "darwin":
+        try:
+            with clipboard_lock:
+                subprocess.run(
+                    ["/usr/bin/pbcopy"], input=text, capture_output=True, encoding="utf-8",
+                    check=True, timeout=5, env={**os.environ, "LC_CTYPE": "en_US.UTF-8"},
+                )
+            return
+        except (OSError, subprocess.SubprocessError):
+            raise HTTPException(503, "无法写入电脑剪贴板，请在已登录的桌面会话中重试") from None
+    if sys.platform != "win32":
+        raise HTTPException(501, "当前系统不支持剪贴板，文件和文字传输仍可用")
     for _ in range(3):
         try:
             with clipboard_lock:
@@ -185,6 +213,7 @@ def _write_clipboard_sync(text: str):
             return
         except Exception:
             time.sleep(0.05)
+    raise HTTPException(503, "无法写入电脑剪贴板，请稍后重试")
 
 
 # ── Startup / shutdown ─────────────────────────────────────────────────────────
@@ -261,7 +290,7 @@ async def list_files():
     files = sorted(
         ({"filename": p.name, "size": p.stat().st_size,
           "modified": datetime.fromtimestamp(p.stat().st_mtime, timezone.utc).isoformat()}
-         for p in UPLOAD_DIR.iterdir() if p.is_file()),
+         for p in UPLOAD_DIR.iterdir() if not p.is_symlink() and p.is_file()),
         key=lambda x: x["modified"], reverse=True,
     )
     return {"files": files}
@@ -270,7 +299,7 @@ async def list_files():
 @app.get("/api/files/download/{filename}")
 async def download_file(filename: str):
     path = UPLOAD_DIR / Path(filename).name
-    if not path.exists() or not path.is_file():
+    if path.is_symlink() or not path.is_file():
         raise HTTPException(404, "File not found")
     encoded = quote(path.name, encoding="utf-8")
     return FileResponse(
@@ -353,7 +382,8 @@ async def delete_history_entry(entry_id: str):
 @app.get("/api/info")
 async def get_info():
     return {"ip": server_ip, "port": server_port,
-            "url": build_access_url(), "maxFileBytes": max_file_bytes}
+            "url": build_access_url(), "maxFileBytes": max_file_bytes,
+            "clipboardAvailable": sys.platform in ("win32", "darwin")}
 
 
 @app.get("/api/qr")
@@ -372,13 +402,12 @@ async def serve_frontend():
 
 # ── Entry point ────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    import sys
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
     parser = argparse.ArgumentParser(description="LAN Transfer Tool")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
-    parser.add_argument("--host", type=str, default=None, help="Override detected LAN IP")
+    parser.add_argument("--host", type=str, default=None, help="Bind to this IP instead of the detected LAN IP")
     parser.add_argument("--upload-dir", type=str, default=None, help="Custom upload directory")
     parser.add_argument(
         "--max-file-gb",
@@ -390,9 +419,8 @@ if __name__ == "__main__":
 
     server_port = args.port
     max_file_bytes = max_file_bytes_from_gb(args.max_file_gb)
-    if args.host:
-        server_ip = args.host
+    server_ip = args.host or detect_lan_ip()
     if args.upload_dir:
         UPLOAD_DIR = Path(args.upload_dir)
 
-    uvicorn.run(app, host="0.0.0.0", port=args.port)
+    uvicorn.run(app, host=server_ip, port=args.port, access_log=False)

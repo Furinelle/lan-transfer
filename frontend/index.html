@@ -2,6 +2,7 @@
 <html lang="zh">
 <head>
   <meta charset="UTF-8">
+  <meta name="referrer" content="no-referrer">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
   <title>LAN Transfer</title>
   <style>
@@ -319,6 +320,7 @@
 
 <!-- ══ Clipboard ════════════════════════════════════════════════════════════════ -->
 <div class="page" id="page-clipboard">
+  <p id="clipboardStatus" hidden>当前电脑系统不支持剪贴板，文件和文字传输仍可用。</p>
 
   <div class="card">
     <div class="card-hd"><span class="label">读取电脑剪贴板</span></div>
@@ -411,7 +413,10 @@ async function apiJson(path, options = {}) {
     toast('访问链接无效，请重新扫码');
     throw new Error('Invalid access token');
   }
-  if (!r.ok) throw new Error(`Request failed: ${r.status}`);
+  if (!r.ok) {
+    const error = await r.json().catch(() => ({}));
+    throw new Error(error.detail || `请求失败：${r.status}`);
+  }
   return r.json();
 }
 
@@ -578,11 +583,15 @@ setInterval(() => {
 let pollTimer = null;
 
 async function readClipboard() {
-  const data = await apiJson('/api/clipboard/read');
-  if (data.content !== null && data.content !== undefined) {
-    document.getElementById('clipRead').value = data.content;
-  } else {
-    toast(data.error || '剪贴板无文本');
+  try {
+    const data = await apiJson('/api/clipboard/read');
+    if (data.content !== null && data.content !== undefined) {
+      document.getElementById('clipRead').value = data.content;
+    } else {
+      toast(data.error || '剪贴板无文本');
+    }
+  } catch (error) {
+    toast(error.message);
   }
 }
 
@@ -600,12 +609,15 @@ function copyToPhone() {
 async function writeClipboard() {
   const content = document.getElementById('clipWrite').value;
   if (!content) { toast('请先输入文字'); return; }
-  const r = await apiFetch('/api/clipboard/write', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ content }),
-  });
-  if (r.ok) toast('✓ 已写入电脑剪贴板');
-  else       toast('写入失败');
+  try {
+    await apiJson('/api/clipboard/write', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content }),
+    });
+    toast('✓ 已写入电脑剪贴板');
+  } catch (error) {
+    toast(error.message);
+  }
 }
 
 function toggleAutoPoll() {
@@ -669,6 +681,11 @@ apiJson('/api/info').then(d => {
   maxFileBytes = d.maxFileBytes;
   document.getElementById('hdrUrl').textContent = d.url;
   document.getElementById('serverUrl').textContent = d.url;
+  if (!d.clipboardAvailable) {
+    document.getElementById('clipboardStatus').hidden = false;
+    document.querySelectorAll('#page-clipboard button, #page-clipboard input, #page-clipboard textarea')
+      .forEach(control => { control.disabled = true; });
+  }
 }).catch(() => {
   document.getElementById('hdrUrl').textContent = '访问链接无效，请重新扫码';
 });

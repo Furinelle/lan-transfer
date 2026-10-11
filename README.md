@@ -22,7 +22,7 @@
 
 ## 系统要求
 
-- **操作系统**：Windows（剪贴板功能依赖 `pywin32`，仅支持 Windows）
+- **操作系统**：macOS 或 Windows，均支持文件、文字和系统剪贴板；其他系统可使用文件和文字传输，剪贴板入口会禁用
 - **Python**：3.10 或更高版本
 - 手机与电脑需连接**同一局域网**（同一 Wi-Fi 路由器）
 
@@ -30,11 +30,21 @@
 
 ## 安装
 
-```bash
-pip install -r requirements.txt
+macOS：
+
+```sh
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
 ```
 
-首次安装需要网络，完成后即可离线使用。
+Windows（命令提示符）：
+
+```bat
+python -m venv .venv
+.venv\Scripts\python -m pip install -r requirements.txt
+```
+
+首次安装需要网络，完成后即可离线使用。`pywin32` 仅在 Windows 安装；macOS 使用系统自带的 `pbcopy` / `pbpaste`，不需要额外剪贴板依赖。
 
 ---
 
@@ -42,12 +52,19 @@ pip install -r requirements.txt
 
 ### 方式一：双击运行（推荐）
 
-双击项目目录中的 `start.bat`，黑色命令行窗口会自动打开并启动服务。
+- macOS：双击 `start.command`，或在终端执行 `./start.command`
+- Windows：双击 `start.bat`
+
+启动脚本优先使用项目内的 `.venv`。macOS 如果限制双击执行，可用终端命令启动。
 
 ### 方式二：命令行运行
 
-```bash
-python main.py
+```sh
+# macOS
+.venv/bin/python main.py
+
+# Windows
+.venv\Scripts\python main.py
 ```
 
 ### 启动后的样子
@@ -100,6 +117,8 @@ Press Ctrl+C to stop.
 3. **写入电脑剪贴板**：在手机输入框中输入文字，点击「写入」，电脑剪贴板内容立即更新
 4. **自动同步**：开启「自动同步」开关后，每 3 秒自动从电脑读取一次剪贴板，免去反复点击
 
+macOS 需要在已登录的桌面会话中运行。剪贴板忙、系统命令失败或超时时会显示错误，不会假报写入成功。其他系统仍可正常使用文件和文字传输。
+
 ### 传输历史
 
 - 切换到「历史」标签，可查看最近 50 条文件和文字记录
@@ -113,13 +132,20 @@ Press Ctrl+C to stop.
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
 | `--port` | `8899` | 服务监听端口 |
-| `--host` | 自动检测局域网 IP | 手动指定服务 IP（多网卡时有用） |
+| `--host` | 自动检测局域网 IP | 指定实际监听及二维码显示的 IP（多网卡时有用）；`127.0.0.1` 仅供本机访问 |
 | `--upload-dir` | `~/Downloads/LAN Transfer` | 文件上传保存目录 |
 | `--max-file-gb` | `10` | 单文件上传大小上限（GB），`0` 表示不限制 |
 
 ### 使用示例
 
-```bash
+```sh
+# macOS：修改保存目录
+.venv/bin/python main.py --upload-dir "$HOME/Downloads/LAN Transfer"
+
+# macOS：仅在本机使用
+./start.command --host 127.0.0.1 --port 9000
+
+# 以下为 Windows 示例
 # 修改文件保存目录
 python main.py --upload-dir "D:\MyFiles"
 
@@ -145,7 +171,9 @@ python main.py --port 9000 --upload-dir "D:\Share" --max-file-gb 20
 
 - 访问令牌（token）在每次启动时随机生成，仅通过二维码或终端 URL 获取
 - 所有 API 请求均需携带有效 token，缺少或错误的 token 会收到 `403 Forbidden`
-- 服务仅在局域网内可访问，不会暴露到公网
+- 默认只监听检测到的局域网网卡，`--host` 会实际改变监听地址；没有可用网卡时退回 `127.0.0.1`
+- 使用 HTTP，仅适合可信局域网。不要配置公网端口转发或公开分享带 token 的链接；token 持有者可读取、上传和删除共享目录文件，以及读写剪贴板
+- 默认启动关闭访问日志，避免记录 URL 中的 token；文件列表和下载跳过符号链接，防止它们指向共享目录外的私人文件
 
 ---
 
@@ -164,9 +192,21 @@ python main.py --port 9000 --upload-dir "D:\Share" --max-file-gb 20
 
 **Q：剪贴板功能报错？**
 
-- 剪贴板功能仅支持 Windows，macOS / Linux 不可用
-- 确保 `pywin32` 已正确安装：`pip install pywin32`
+- macOS：在已登录的桌面会话中启动，确认 `/usr/bin/pbcopy` 和 `/usr/bin/pbpaste` 可用
+- Windows：在项目虚拟环境中重新安装依赖，确认 `pywin32` 安装成功
+- Linux 等其他系统：文件和文字传输可用，剪贴板功能会禁用
 
 **Q：重启服务后手机无法访问旧链接？**
 
 - 每次启动会生成新 token，旧链接自动失效，重新扫码或复制新 URL 即可
+
+## 本地验证
+
+安装运行依赖后，再安装测试所需的 `httpx`，执行标准库测试：
+
+```sh
+.venv/bin/python -m pip install httpx
+.venv/bin/python -m unittest discover -s tests -v
+```
+
+测试使用临时目录和模拟剪贴板，不读取或修改真实系统剪贴板。Windows 可将 `.venv/bin/python` 替换为 `.venv\Scripts\python`。
